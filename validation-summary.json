@@ -1,0 +1,45 @@
+{
+  "version": "0.2.0",
+  "experimental": true,
+  "platform": "x86_64 macOS 11+ / AppleUSBXHCI",
+  "settings": {
+    "poll_requested_us": 100,
+    "stable_event_stall_us": 200,
+    "default_enabled": true,
+    "duration_limit": null
+  },
+  "offline_validation": {
+    "driver_samples": [
+      "24E263",
+      "24H32"
+    ],
+    "runtime_layout_assertions_per_sample": 794,
+    "hook_span_assertions_per_sample": 538,
+    "prepare_assertions_per_sample": 1142,
+    "hardware_executed_during_offline_validation": false
+  },
+  "hardware_feedback": {
+    "scope": "single AMD Ryzen 9 8945HS system; preliminary user report",
+    "installer_image_load": "over 3 hours to under 3 minutes",
+    "negotiated_link": "USB 3 / 5 Gbps reported",
+    "three_md5_reads": "identical",
+    "installation_completed": false,
+    "integrity_proven_by_reference_hash": false,
+    "media_suspected_damaged": true,
+    "wireless_mouse_2_4GHz": "responsive",
+    "usb_a": "SG Flash (23A9:EF18) detected and readable",
+    "usb_c_ethernet": "usable after GP19 restoration; ping comparable to normal macOS"
+  },
+  "kext_sha256": "8630637dc42c6079b3295cc76321e56d4b8efdb59b3d5389eb525ebd7766b766",
+  "source_audit": "docs/audit-review.json records the earlier static review; it does not claim hardware validation.",
+  "test_machine": {
+    "model": "ROG Zephyrus G14 GA403UV",
+    "cpu": "AMD Ryzen 9 8945HS",
+    "usb4": true,
+    "topology": "GP17: XHC0/XHC1; GP19: XHC3/XHC4/NHI0; XHC2 is non-xHCI",
+    "pre_fix_recovery_usb2_read_mb_s": 0.48,
+    "generic_usb_xhci": "1.3.0b2 GUX-RyzenXHCIFix line",
+    "utbmap": "custom UTBMap 1.1"
+  },
+  "boot_args": "-v keepsyms=1 debug=0x100 -wegnoegpu -vi2c-force-polling amfi=0x80 ipc_control_port_options=0 alcid=11"
+}
