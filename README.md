@@ -1,6 +1,5 @@
 <h1 align="center">USBXHCIWakeup</h1>
 
-<p align="center">用于 macOS AppleUSBXHCI 中断通知延迟的实验性 USB 事件补偿补丁</p>
 
 <p align="center"><a href="README.md">简体中文</a> · <a href="README_EN.md">English</a></p>
 

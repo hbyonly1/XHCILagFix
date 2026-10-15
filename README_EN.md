@@ -1,6 +1,5 @@
 <h1 align="center">USBXHCIWakeup</h1>
 
-<p align="center">An experimental USB event compensation patch for delayed AppleUSBXHCI interrupt delivery on macOS</p>
 
 <p align="center"><a href="README.md">简体中文</a> · <a href="README_EN.md">English</a></p>
 
