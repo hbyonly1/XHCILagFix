@@ -2,21 +2,29 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Arch</key>
-    <string>x86_64</string>
-    <key>BundlePath</key>
-    <string>USBXHCIWakeup.kext</string>
-    <key>Comment</key>
-    <string>Experimental AppleUSBXHCI native wakeup; automatic, 100us poll, 200us stall</string>
-    <key>Enabled</key>
-    <true/>
-    <key>ExecutablePath</key>
-    <string>Contents/MacOS/USBXHCIWakeup</string>
-    <key>MaxKernel</key>
-    <string></string>
-    <key>MinKernel</key>
-    <string></string>
-    <key>PlistPath</key>
-    <string>Contents/Info.plist</string>
+	<key>Kernel</key>
+	<dict>
+		<key>Add</key>
+		<array>
+			<dict>
+				<key>Arch</key>
+				<string>x86_64</string>
+				<key>BundlePath</key>
+				<string>XHCILagFix.kext</string>
+				<key>Comment</key>
+				<string>XHCILagFix (Ring 0) 0.1.0; after Lilu</string>
+				<key>Enabled</key>
+				<true/>
+				<key>ExecutablePath</key>
+				<string>Contents/MacOS/XHCILagFix</string>
+				<key>MaxKernel</key>
+				<string></string>
+				<key>MinKernel</key>
+				<string></string>
+				<key>PlistPath</key>
+				<string>Contents/Info.plist</string>
+			</dict>
+		</array>
+	</dict>
 </dict>
 </plist>

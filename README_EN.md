@@ -1,161 +1,140 @@
-<h1 align="center">USBXHCIWakeup</h1>
+# XHCILagFix (Ring 0)
 
+Fixes severe USB port latency on some x86_64 macOS platforms, manifested as a mouse that stutters and can barely move, repeated keyboard input, and extremely slow USB storage reads. The patch hooks into AppleUSBXHCI through Lilu and redirects the completion-event targets of all four USB transfer types to **Interrupter 0 / Event Ring 0**.
 
-<p align="center"><a href="README.md">简体中文</a> · <a href="README_EN.md">English</a></p>
+This repository was previously named USBXHCIWakeup. The new version completely replaces the old polling-based compensation implementation with the standalone **XHCILagFix.kext 0.1.0**: instead of waiting for events to accumulate and then manually waking the driver, it changes the target ring that the hardware will use before requests are submitted.
 
----
+## Test Status
 
-This is an experimental compensation patch for macOS AppleUSBXHCI, targeting cases where USB devices enumerate normally but storage reads and input responses periodically stall. The root mechanism is still unclear. Keep a bootable original EFI and use this project at your own risk.
+- **Tested on macOS 15 Sequoia**: AMD Ryzen 9 8945HS / ROG Zephyrus G14 GA403UV. The previously severe USB input latency has improved, and the devices have become usable again.
+- **Tested on macOS 26 Tahoe**.
 
-## Prerequisites
+In theory, all newer systems should be supported. Older systems have not been tested, and it is not yet known when Apple made major changes to XHCI.
 
-| Item | Test environment |
-|---|---|
-| Model | ROG Zephyrus G14 (2024) GA403UV |
-| CPU / iGPU | AMD Ryzen 9 8945HS; Radeon 780M |
-| dGPU | NVIDIA GeForce RTX 4060 Laptop GPU |
-| macOS target | x86_64 macOS; mainly tested in Sequoia Recovery / installer environments |
-| USB ports | 2× USB 3.2 Gen 2 Type-A (up to 10 Gbps); 1× USB 3.2 Gen 2 Type-C (up to 10 Gbps, DisplayPort); 1× USB4 Type-C (up to 40 Gbps, DisplayPort / PD); plus microSD, HDMI 2.1 and 3.5 mm audio |
-| Device mapping | XHC0/XHC1/XHC3/XHC4 use a custom UTBMap; XHC3/XHC4 Type-C ports use Type-C + Switch mapping, while XHC0 keeps external USB3 and internal device ports |
+## Problem Mechanism
 
-See the [official ASUS GA403 specifications](https://rog.asus.com/us/laptops/rog-zephyrus/rog-zephyrus-g14-2024/spec/). The official page describes the product model; actual device relationships come from this machine's IORegistry and UTBMap.
-
-### Enabled Kexts and parameters
-
-| Component | Version / role |
-|---|---|
-| Lilu | 1.7.3; base for other plugins |
-| GenericUSBXHCI | 1.3.0b2, the Ryzen-compatible GUX-RyzenXHCIFix branch; used for early xHCI probing |
-| USBToolBox + UTBMap | USBToolBox 1.2.0 and UTBMap 1.1; UTBMap is customized for this machine |
-| USBXHCIWakeup | 0.2.0; this project's fallback event-wakeup path |
-| AMDRyzenCPUPowerManagement | 17.0.0 |
-| SMCAMDProcessor | 17.0.0 |
-| VoodooI2C / VoodooI2CHID | Touchpad and I2C input path |
-| VoodooPS2Controller | Keyboard, mouse and compatible input path |
-| AsusSMC, WhateverGreen, AppleALC, AMFIPass, RestrictEvents | Platform, graphics, audio and system compatibility |
-
-The key boot arguments in this EFI are:
+Repeated log captures showed that a USB Transfer Event was already valid in Ring 1, but the corresponding XNU interrupt entry often did not execute until about 50 ms later, with some samples taking longer. After entering the XNU interrupt handler, AppleUSBXHCI's Filter, Action, and event consumption usually took only microseconds.
 
 ```text
--v keepsyms=1 debug=0x100 -wegnoegpu -vi2c-force-polling
-amfi=0x80 ipc_control_port_options=0 alcid=11
+USB transfer completed; the event in Ring 1 is already valid
+                 ↓
+       Tens of milliseconds of waiting (the culprit!!)
+                 ↓
+         XNU hardware interrupt entry
+                 ↓
+       Filter / Action / event consumption
+             Usually microseconds
 ```
 
-`XhciPortLimit=false` is also retained. Firmware IOMMU is disabled.
+Therefore, this project addresses the notification path after completion events are generated. A valid Event does not establish that an MSI write transaction has been sent, and the existing logs alone cannot assign responsibility to MSI, APIC, or the CPU.
 
-## Symptoms
+## My Hypothesis: Enabling Multiple Interrupters Does Not Mean Interrupter Mapping Is Usable
 
-On the ROG Zephyrus G14 GA403UV:
+This approach was inspired by QEMU's xHCI fault and its fix. [QEMU's MSI mapping patch](https://lists.nongnu.org/archive/html/qemu-devel/2024-12/msg03236.html) corrected the modulo mapping from secondary Interrupters to enabled MSI messages, resolving the problem when used with the macOS driver. This fix indicates a compatibility problem between multiple Interrupters and a small number of MSI messages.
 
-- After reboot, the keyboard could randomly develop input delays and duplicate characters; a 2.4 GHz wireless mouse could barely move or click; a USB-C Ethernet adapter could enumerate but had extremely high latency; only the touchpad remained usable;
-- Offline installer reads were extremely slow and took more than three hours to enter the system; another user reported almost the same duration;
-- Device enumeration and protocols looked normal, IORegistry showed the controller and devices, and the link could report USB 3 at 5 Gbps, while actual requests still stalled for long periods.
+[The xHCI 1.2b specification, §4.17.1 Interrupter Mapping](https://cdrdv2-public.intel.com/625472/625472_xHCI_Rev1_2b.pdf#page=263), states:
 
-The symptoms resemble several AMD OS X community reports. The first concerns a Ryzen 7 6800H / Radeon RX 6850M XT laptop with very slow keyboard/mouse input and almost unusable USB storage during Sonoma installation; users in that discussion suggested it was very likely related to USB4 controller compatibility. The second concerns a Ryzen 9 8945HS Minisforum UM890 Pro and reports extremely slow wireless keyboard/mouse input in Recovery. It also has USB4. These reports suggest a possible AMD Ryzen, USB4/XHCI and macOS-installer combination, but the relationship with USB4 is still unconfirmed:
+> If the Number of Interrupters (MaxIntrs) field is greater than 1, then Interrupter Mapping shall be supported.
 
-- [R7 6800H / RX 6850M USB installation issue](https://forum.amd-osx.com/threads/r7-6800h-rx6850m-laptops-having-usb-issues-while-installing-sonoma.4726/)
-- [Minisforum UM890 Pro / Ryzen 9 8945HS slow wireless input](https://forum.amd-osx.com/threads/minisforum-um890-pro-amd-ryzen-9-8945hs-w-radeon-780m-graphics.5900/)
+And:
 
-## Investigation and conclusion
+> If Interrupter Mapping is not supported, the Interrupter Target field shall be ignored by the xHC and all Events targeted at Interrupter 0.
 
-Through repeated logs, IORegistry inspection, driver disassembly and limited event sampling, the problem was narrowed from “USB devices are slow” to the interrupt-notification path for one completion event. The logs confirmed BOT storage, but the BOT CBW, data and CSW phases were not the cause of the stall.
+My view is almost the same as the original author's: **On affected platform and system combinations, MaxIntrs > 1 alone does not establish that Interrupter Mapping and the notification paths of secondary Interrupters are actually usable.**
 
-The boundaries of one read can be represented as:
+`shall be supported` is a specification requirement for the implementation, while the actual implementation should be assessed according to the hardware's real behavior. In particular, a distinction must be made between:
+
+- **Which Ring an event is mapped to**: Transfer Events have been observed being written to Ring 1 on this machine, so the ring memory cannot be said to be completely unusable.
+- **Whether that Interrupter can notify the CPU promptly**: This is the suspicious stage indicated by the long wait.
+
+On this basis, the conclusion is that **the notification paths of secondary Interrupters 1/2 cannot be used** (the exact mechanism remains unclear). There is not yet enough evidence to determine independently whether Ring 2 is faulty. Based on Linux and Windows enabling only Ring 0, the goal of the fix is to bypass Ring 1 and Ring 2.
+
+A single MSI message is not the cause of the error either: the specification allows multiple Interrupters to map to fewer MSI messages, but **the prerequisite is that the mapping mechanism works**. QEMU's modulo fix changes the selection of the notification message; the events remain in their original Ring. Because we cannot observe the internal behavior of real hardware, and could not modify it even if we observed it, this patch instead changes the transfer Target directly, causing these events to go to Ring 0.
+
+## Why Not Simply Change MaxIntrs to 1
+
+In the AppleUSBXHCI version audited through disassembly, the driver requires at least three Interrupters and always initializes three groups with the following roles:
+
+| Interrupter / Ring | Original driver role |
+| --- | --- |
+| 0 | Primary events such as command completion, port status changes, and MFINDEX Wrap |
+| 1 | Transfer events for non-isochronous endpoints such as Control, Bulk, and Interrupt |
+| 2 | Transfer events for Isochronous endpoints |
+
+Therefore, simply faking MaxIntrs=1 would conflict with this driver's startup requirements. Our solution is to **preserve the driver's process of creating three Interrupters while setting all transfer targets that can be rewritten to 0.** Ring 1/2 do not need to be disabled, and neither the controller's reported MaxIntrs nor the PCI MSI configuration needs to be modified.
+
+## Specific Changes: Three Hooks
+
+### 1. Regular TransferRing::enqueueRequest
+
+Covers Control, Bulk, and Interrupt requests. Before the original enqueueRequest executes, all prepare subclasses have finished constructing their TDs, but the new request has not yet been linked and published to the controller by the original function.
+
+Traverse the request's complete TD queue and clear the Interrupter Target of valid TRBs:
+
+```cpp
+trb.dw2 &= ~0xffc00000U; // DW2[31:22] = Interrupter Target = 0
+```
+
+DMA addresses, the lower 22 bits of DW2, DW3, IOC, BEI, Cycle, and queue topology are preserved. Supported types such as Normal, Setup/Data/Status, Link, Event Data, and No Op Transfer are all processed uniformly before submission.
+
+### 2. IsochronousTransferRing::enqueueRequest
+
+The same processing is applied to isochronous requests, covering Isoch TRBs and associated descriptors. Thus, all four USB transfer types fall within this version's rewrite scope, without distinguishing keyboards and mice, USB drives, audio devices, VID/PID, or ports.
+
+The enqueue entry points were chosen instead of addTD because the final TD may be enqueued directly, bypassing addTD, and Control subclasses may continue appending descriptors after the base prepare returns. Processing the complete queue at both enqueue entry points covers these cases in the audited paths.
+
+### 3. CommandRing::setAddress
+
+Some error events that lack a usable target TRB use the fallback Target in the Slot Context. Rewriting transfer TRBs alone does not cover this selection path.
+
+Before Address Device is submitted, the patch creates a private 32-byte copy of the Slot input, sets the copy's Target to 0, and passes it to the original function. The original driver synchronously copies it into its own DMA Input Context, so the stack copy is not directly used as DMA memory for asynchronous hardware access. The original function's cleanup of the source DW3 is preserved, and the source DW2 is not overwritten directly.
+
+The other audited Configure Endpoint paths do not update the Slot Target, and the EP0 Evaluate path does not set A0, which is required to update the Slot, so no redundant Hooks are added for them. Additional Slot Evaluate A0 paths introduced in the future or by third parties are outside the current coverage.
+
+## Generality
+
+- Locates entry points using the runtime symbols of the loaded AppleUSBXHCI.
+- Does not check a system build, UUID, or entry-byte whitelist, and does not restrict operation to a particular AMD PCI ID, device, or port.
+- Listens only for AppleUSBXHCI and does not require an IOUSBHostFamily UUID match; request rewriting also does not depend on successful endpoint descriptor identification.
+- Lilu creates trampolines at the actual entry points. The plugin's version range includes Darwin 25, used by macOS 26, and MinKernel/MaxKernel are left empty in the OpenCore entry. A Lilu version that supports the corresponding system is required; this project's minimum dependency version is 1.7.3.
+- Retains checks for null pointers, unpublished requests, queue structure, and TRB types; rewriting occurs only after the entire queue has been validated. Reads the actual TD capacity, allowing at most 256 slots per TD and 256 TDs per request, to avoid out-of-bounds or partial rewrites.
+
+## Installation
+
+1. Place `Kexts/XHCILagFix.kext` in `EFI/OC/Kexts`.
+2. Enable the plugin in OpenCore's `Kernel/Add`, after Lilu. See [OpenCore/Kernel-Add.plist](OpenCore/Kernel-Add.plist) for a reference entry; do not use it to replace your entire configuration.
+3. Disable the old USBXHCIWakeup, GenericUSBXHCI, or other plugins that fix similar issues, to avoid duplicate rewriting.
+4. Reboot for it to take effect.
+
+To disable it, use the boot argument `-xhcilagfixoff`; `-xhciallrouteoff` is also supported. This plugin does not support runtime unloading.
+
+## Checking Whether It Is Active
+
+```sh
+ioreg -r -c XHCILagFix -l -w0
+```
+
+| Field | Meaning |
+| --- | --- |
+| Version | Standalone plugin version, currently 0.1.0 |
+| Active | All three core Hooks have been installed and rewriting is enabled |
+| Failure | Description of a symbol-resolution or trampoline-installation failure; empty on success |
+
+This shows only the loading and Hook installation status. The status is published only when the service starts and when driver loading completes; `Active=Yes` means that the patch is enabled, while the actual effect should be judged by device behavior.
+
+## Project Contents and Validation
 
 ```text
-Block request / SCSI READ
-        ↓
-BOT: CBW → Data → CSW
-        ↓
-xHCI Transfer TRB / Event Ring
-        ↓
-MSI or another interrupt notification
-        ↓
-XNU interrupt entry
-        ↓
-AppleUSBXHCI Filter / Action / event consumption
+src/                    Standalone patch source, 221 lines including comments and blank lines
+Kexts/XHCILagFix.kext/   Prebuilt plugin
+OpenCore/               Reference Kernel/Add entry
+tests/                  Offline queue and original-function forwarding tests
+build.sh                Build script
+validate.py             Offline validation script
+BUILDING.md             Build instructions
+validation-summary.json Validation summary
 ```
 
-The most important timeline was:
+Offline tests cover queue rewriting for all four transfer types, different TD capacities, preservation of other bit fields, original-function arguments and return values, private Slot copies, missing symbols, and forwarding after partial installation.
 
-```text
-USB Transfer Event already written to the Event Ring
-        ↓ about 40–50 ms (the main source of all the delay!!)
-XNU hardware interrupt entry
-        ↓ microseconds
-AppleUSBXHCI Filter / Action / event consumption
-```
-
-The completion event already existed, and the native driver handled it quickly. The main gap was between the event becoming valid and the XNU interrupt path starting. It still cannot be determined whether the delay occurs before xHCI generates MSI, during PCIe/SoC delivery, between the Local APIC and CPU acceptance, or because another shared interrupt later wakes the other Event Ring activity.
-
-### Relation to QEMU Issue #2705
-
-[QEMU Issue #2705](https://gitlab.com/qemu-project/qemu/-/issues/2705) discusses macOS guests where incorrect xHCI interrupt mapping prevents non-zero Event Ring events from being delivered in time through MSI/MSI-X or pin-based interrupts. The proposed fixes include disabling unsupported Interrupters or routing events to Ring 0 when mapping is unsupported.
-
-The local machine and that issue share a symptom: USB device delays caused by interrupt anomalies. Later investigation confirmed that this machine's three Interrupters (Rings 0, 1 and 2) correctly share CPU Vector 116 through one MSI message according to the xHCI mapping rule, and Ring 1 uses Target=1. The mapping itself is therefore correct. The actual finding was that Ring 1's Transfer Event was already valid but arrived at the XNU interrupt entry about 40–50 ms late, while Filter, Action and event consumption took only microseconds. The correct description is delayed interrupt notification or delivery for Ring 1 completion events, rather than an Interrupter mapping error; the exact MSI generation and delivery stage was not directly observed.
-
-After repeated logs, disassembly and reboots, the cause could only be localized roughly to this boundary. Further sampling still lacked an available timestamp for the actual MSI write transaction, and continued communication with AI produced little new progress. The investigation stops here. This patch is a symptom workaround, not a root fix for the hardware mechanism.
-
-## Current workaround
-
-Because only the touchpad remained usable, and inspired by its `-vi2c-force-polling` approach, I also adopted polling to bypass the interrupt-notification problem.
-
-The patch keeps the normal MSI path and adds a fallback wake path:
-
-1. Check the real Event Ring on each controller's original workloop;
-2. Confirm that a valid event remains unconsumed;
-3. Request a check every **100 µs**, triggering compensation after **200 µs** of stable dwell;
-4. Call AppleUSBXHCI's own `manuallyProcessInterrupts()` on the original workloop;
-5. Let the native driver consume events and perform normal ERDP/EHB updates.
-
-The 100 µs check interval and 200 µs dwell interval were chosen from current testing, and this setting worked well in those tests. The patch does not change Interrupter Target, MSI/MSI-X, IMAN, IMOD or interrupt configuration, and does not move the Ring consumer. Unknown private ABIs, object relationships or lifecycle overrides fail closed.
-
-## Unknown impact
-
-The following are still unproven:
-
-- CPU usage and power cost of the 100 µs check interval on every machine;
-- Stability during sleep, wake, hot-plug and multi-controller workloads;
-- Whether manual compensation can trigger an undiscovered driver lock interaction;
-- Whether long runs or abnormal power loss can expose a data-consistency problem.
-
-Repeated MD5 values for large-file reads show that USB reads are stable and repeatable. The native driver still consumes the Event Ring; the patch does not fabricate events or rewrite MSI configuration.
-
-## Current test feedback
-
-According to tests on this machine only:
-
-- USB read speed returned to normal practical USB 3.0 behavior; offline installer image loading fell from more than three hours to around three minutes, and the system was successfully installed and entered;
-- 2.4 GHz wireless mouse and keyboard responsiveness returned; USB-C Ethernet became usable and ping latency was normal;
-- USB-A and USB-C ports appeared to work normally;
-- The USB 3.0 SG Flash boot disk, which previously exited abnormally, can now be read.
-
-## Scope
-
-- macOS 11 or later, x86_64, AppleUSBXHCI;
-- Lilu 1.7.3 or a compatible version, loaded before this Kext;
-- not guaranteed for every AMD/Intel controller or macOS build; unknown private ABIs are safely rejected;
-- 100 µs is a requested polling interval, not a hard real-time guarantee; CPU usage, sleep/wake, hot-plug and multi-controller workloads need further testing.
-
-The patch starts automatically. Use `-xhciwakeupoff` to disable it or restore the original EFI.
-
-## Applying the patch
-
-1. Back up the current EFI and copy `Kexts/USBXHCIWakeup.kext` to `EFI/OC/Kexts/`.
-2. Add the entry from `OpenCore/Kernel-Add.plist` to `config.plist → Kernel → Add`, keep it after Lilu, and enable it.
-
-## Repository contents
-
-- `Kexts/USBXHCIWakeup.kext`: built x86_64 Kext;
-- `OpenCore/Kernel-Add.plist`: Kernel → Add fragment;
-- `collector/`: read-only status export and start/stop tool;
-- `src/`, `tests/`, `build.sh`: source and offline validation material;
-- `licenses/`: Lilu, MacKernelSDK and HDE64 license texts;
-- `validation-summary.json`: build and offline validation summary.
-
-The collector is not required to enable the patch. It only reports per-controller state, wake calls and progress counters.
-
-## Validation boundary
-
-`manuallyProcessInterrupts()` follows the native completion path, so the native driver may update hardware state registers. The patch does not directly rewrite those registers. Lock interactions in extreme native-callback lifecycle interleavings have not been exhaustively verified; keep a bootable original EFI and rollback option.
-
+See [BUILDING.md](BUILDING.md) for build instructions.

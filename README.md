@@ -1,161 +1,142 @@
-<h1 align="center">USBXHCIWakeup</h1>
+# XHCILagFix (Ring 0)
 
+[English](README_EN.md)
 
-<p align="center"><a href="README.md">简体中文</a> · <a href="README_EN.md">English</a></p>
+用于修复部分 x86_64 macOS 平台上 USB 端口出现的严重延迟问题，表现为鼠标卡顿几乎不可移动、键盘重复输入和 USB 存储器读取极慢的问题。补丁通过 Lilu 接入 AppleUSBXHCI，将四类 USB 传输的完成事件目标统一重定向到 **Interrupter 0 / Event Ring 0**。
 
----
+本仓库原名 USBXHCIWakeup。新版已用独立的 **XHCILagFix.kext 0.1.0** 完整替换旧轮询补偿实现：不再等待事件积压后手动唤醒驱动，而是在请求提交前改变硬件将采用的目标环。
 
-这是一个针对 macOS AppleUSBXHCI 的实验性补偿补丁，面向一类“USB 设备已经枚举，但存储读取和输入设备响应都周期性停顿”的问题。根本机制尚不清楚，使用者应保留可启动的原 EFI，并自行承担测试风险。
+## 测试状态
 
-## 前置条件
+- **macOS 15 Sequoia 已测试**：AMD Ryzen 9 8945HS / ROG Zephyrus G14 GA403UV，此前严重的 USB 输入延迟问题已改善、设备恢复可用。
+- **macOS 26 Tahoe 已测试**。
 
-| 项目 | 本次测试环境 |
-|---|---|
-| 机型 | ROG Zephyrus G14（2024）GA403UV |
-| CPU / iGPU | AMD Ryzen 9 8945HS；Radeon 780M |
-| 独立显卡 | NVIDIA GeForce RTX 4060 Laptop GPU |
-| macOS 目标 | x86_64 macOS；本次主要在 Sequoia Recovery / 安装器环境测试 |
-| USB 接口 | 2× USB 3.2 Gen 2 Type-A（最高 10 Gbps）；1× USB 3.2 Gen 2 Type-C（最高 10 Gbps、DisplayPort）；1× USB4 Type-C（最高 40 Gbps、DisplayPort / PD）；另有 microSD、HDMI 2.1 和 3.5 mm 音频口 |
-| 设备映射 | XHC0/XHC1/XHC3/XHC4 使用定制 UTBMap；XHC3、XHC4 的 Type-C 端口按 Type-C + Switch 映射，XHC0 保留外部 USB3 和内部设备端口 |
+理论上来说较新系统应全部支持，旧系统未测试，尚不知道苹果何时对 XHCI 进行了较大改动。
 
-接口能力参考 [ASUS GA403 官方规格](https://rog.asus.com/us/laptops/rog-zephyrus/rog-zephyrus-g14-2024/spec/)。官方规格说明的是产品型号能力；实际连接关系以本机 IORegistry 和 UTBMap 为准。
+## 问题机制
 
-### 已启用的关键 Kext 与参数
-
-| 项目 | 版本 / 作用 |
-|---|---|
-| Lilu | 1.7.3；其他插件的基础 |
-| GenericUSBXHCI | 1.3.0b2，GUX-RyzenXHCIFix 的 Ryzen 兼容分支；用于早期 xHCI 探测路径 |
-| USBToolBox + UTBMap | USBToolBox 1.2.0、UTBMap 1.1；UTBMap 为本机定制端口映射 |
-| USBXHCIWakeup | 0.2.0；本项目的备用事件唤醒路径 |
-| AMDRyzenCPUPowerManagement | 17.0.0 |
-| SMCAMDProcessor | 17.0.0 |
-| VoodooI2C / VoodooI2CHID | 触控板和 I2C 输入链 |
-| VoodooPS2Controller | 键盘、鼠标和兼容输入链 |
-| AsusSMC、WhateverGreen、AppleALC、AMFIPass、RestrictEvents | 平台、显示、音频和系统兼容 |
-
-本次 EFI 的关键启动参数为：
+经过反复抓取日志观察到：USB Transfer Event 已经在 Ring 1 中有效，但对应 XNU 中断入口往往约 50 ms 后才执行，部分样本更长；进入 XNU 中断入口后，AppleUSBXHCI 的 Filter、Action 和事件消费通常只需微秒级。
 
 ```text
--v keepsyms=1 debug=0x100 -wegnoegpu -vi2c-force-polling
-amfi=0x80 ipc_control_port_options=0 alcid=11
+USB 传输完成，Ring 1 中事件已经有效
+                 ↓
+          数十毫秒等待（罪魁祸首！！）
+                 ↓
+         XNU 硬件中断入口
+                 ↓
+       Filter / Action / 事件消费
+             通常为微秒级
 ```
 
-同时保留 `XhciPortLimit=false`。固件 IOMMU 关闭。
+因此，本项目处理完成事件产生之后的通知路径。Event 有效无法说明 MSI 写事务已发送，无法仅凭已有日志给 MSI、APIC 或 CPU 定责。
 
-## 问题表现
+## 我的猜测：虽能启用多个 Interrupter，但不代表 Interrupter Mapping 可用
 
-在我的 ROG Zephyrus G14 GA403UV 笔记本上，问题表现为：
+这一思路受到 QEMU 的 xHCI 故障及其修复启发。[QEMU 的 MSI 映射补丁](https://lists.nongnu.org/archive/html/qemu-devel/2024-12/msg03236.html)修正了辅助 Interrupter 到已启用 MSI 消息的取模映射，解决了与 macOS 驱动配合时的问题。该修复说明，多 Interrupter 与少量 MSI 消息之间的兼容存在问题。
 
-- 键盘随着重启会随机性的出现输入延迟、重复字符，2.4 GHz 无线鼠标几乎无法移动和点击，USB-C 有线网卡也可以枚举，但延迟极高几乎不可用，只有触控板可以正常使用；
-- 离线安装盘读取极慢，实测经过三个多小时才能进入系统，有用户也报道过和我几乎一样的时间；
-- 设备列举正常，协议正常，IORegistry 可以看到控制器和设备，链路也可能显示为 USB 3、5 Gbps，但实际请求仍然长时间停顿。
+[xHCI 1.2b 规范 §4.17.1 Interrupter Mapping](https://cdrdv2-public.intel.com/625472/625472_xHCI_Rev1_2b.pdf#page=263)写道：
 
-这与一些 AMD OS X 社区报告的现象相似。第一篇是 Ryzen 7 6800H / Radeon RX 6850M XT 笔记本，报告了安装 Sonoma 时键盘鼠标极慢、USB 存储几乎不可用但设备仍能被识别；讨论中有用户提到有极大可能与 USB4 相关控制器兼容性有关。第二篇是同为 Ryzen 9 8945HS 的 Minisforum UM890 Pro，报告 Recovery 中无线键盘鼠标响应极慢。同样配有 USB4 接口，它们说明问题可能集中出现在 AMD Ryzen、USB4/XHCI 和 macOS 安装环境的组合上，截至目前仍未确认与“USB4”的联系：
+> If the Number of Interrupters (MaxIntrs) field is greater than 1, then Interrupter Mapping shall be supported.
 
-- [R7 6800H / RX 6850M USB installation issue](https://forum.amd-osx.com/threads/r7-6800h-rx6850m-laptops-having-usb-issues-while-installing-sonoma.4726/)
-- [Minisforum UM890 Pro / Ryzen 9 8945HS slow wireless input](https://forum.amd-osx.com/threads/minisforum-um890-pro-amd-ryzen-9-8945hs-w-radeon-780m-graphics.5900/)
+以及：
 
-## 调查过程与结论
+> If Interrupter Mapping is not supported, the Interrupter Target field shall be ignored by the xHC and all Events targeted at Interrupter 0.
 
-调查通过多轮日志、IORegistry、驱动反汇编和有限的事件采样，把问题从“USB 设备整体变慢”缩小到一次完成事件的中断通知链。日志确认存储设备使用 BOT 协议，但 BOT 的 CBW、数据和 CSW 不是停顿的原因。
+我的观点与原作者几乎相同：**在受影响的平台与系统组合上，不能只根据 MaxIntrs > 1，就确定 Interrupter Mapping 及辅助 Interrupter 的通知路径实际可用。** 
 
-一次读取所涉及的边界可以写成：
+`shall be supported` 是规范对实现的要求，而具体实现应根据硬件的实际情况判断。尤其需要区分：
+
+- **事件映射到哪个 Ring**：本机已观察到 Transfer Event 写入 Ring 1，不能说环内存完全不可用。
+- **该 Interrupter 能否及时通知 CPU**：这是长时间等待所指向的可疑环节。
+
+据此把 **辅助 Interrupter 1/2 的通知路径不能使用** 作为结论（具体机制尚不清楚）。Ring 2 尚不足以单独判定故障。根据 Linux 和 Windows 仅启用 Ring 0 的行为，修复的目标是绕过 Ring 1 和 Ring 2 。
+
+单条 MSI 消息也不是错误原因：规范允许多个 Interrupter 映射到较少的 MSI 消息，但 **前提是映射机制工作**。QEMU 的取模修复改变的是通知消息选择，事件仍留在原来的 Ring。因为我们无法观测真机硬件内部行为，即使观测到也无法修改，因此本补丁则直接改变传输的 Target，使这些事件走 Ring 0。
+
+## 为什么不直接将 MaxIntrs 改成1
+
+在已反汇编审计的 AppleUSBXHCI 版本中，驱动要求至少三个 Interrupter，并固定初始化三组用途：
+
+| Interrupter / Ring | 原驱动用途 |
+| --- | --- |
+| 0 | 命令完成、端口状态变化、MFINDEX Wrap 等主事件 |
+| 1 | Control、Bulk、Interrupt 等非等时端点的传输事件 |
+| 2 | Isochronous 等时端点的传输事件 |
+
+因此，直接伪造 MaxIntrs=1 会与该驱动的启动要求冲突。我们的解决方法是：**保留驱动创建三个 Interrupter 的流程，把能够改写的传输目标统一设为0。** Ring 1/2 无需被关闭，控制器报告的 MaxIntrs 和 PCI MSI 配置也不需要修改。
+
+## 具体改动：三个 Hook
+
+### 1. 普通 TransferRing::enqueueRequest
+
+覆盖 Control、Bulk、Interrupt 请求。在原 enqueueRequest 执行之前，所有 prepare 子类已经完成 TD 构造，但新请求尚未由原函数连接并发布给控制器。
+
+遍历完整请求 TD 队列，将有效 TRB 的 Interrupter Target 清零：
+
+```cpp
+trb.dw2 &= ~0xffc00000U; // DW2[31:22] = Interrupter Target = 0
+```
+
+保留 DMA 地址、DW2低22位、DW3、IOC、BEI、Cycle 和队列拓扑。Normal、Setup/Data/Status、Link、Event Data、No Op Transfer 等已支持类型均在提交前统一处理。
+
+### 2. IsochronousTransferRing::enqueueRequest
+
+对等时请求采用相同处理，覆盖 Isoch TRB 及关联描述符。因此 USB 四种传输类型都进入本版改写范围，不区分键鼠、U盘、音频设备、VID/PID 或端口。
+
+选择 enqueue 而不是 addTD，是因为最后一个 TD 可能直接入队而绕过 addTD，Control 子类也可能在基类 prepare 之后继续追加描述符。在两个 enqueue 入口处理完整队列，能覆盖已审计路径中的这些情况。
+
+### 3. CommandRing::setAddress
+
+部分缺少可用目标 TRB 的错误事件会使用 Slot Context 中的备用 Target，仅修改传输 TRB 不覆盖这条选择路径。
+
+补丁在 Address Device 提交前制作 32 字节 Slot 输入副本，将副本 Target 设为0，再交给原函数。原驱动同步复制到自己管理的 DMA Input Context，栈副本不会直接作为硬件异步访问的 DMA 内存。原函数对源 DW3 的清理效果保留，源 DW2 不被直接覆盖。
+
+已审计的其他 Configure Endpoint 路径不更新 Slot Target，EP0 Evaluate 路径没有设置更新 Slot 所需的 A0，因此不为它们增加冗余 Hook。未来或第三方额外的 Slot Evaluate A0 路径不在当前覆盖范围。
+
+## 通用性
+
+- 按已加载 AppleUSBXHCI 的运行时符号定位。
+- 不检查系统 build、UUID 或入口字节白名单，不限定某个 AMD PCI ID、设备或端口。
+- 只监听 AppleUSBXHCI，不要求 IOUSBHostFamily 的 UUID 匹配；请求改写也不依赖端点描述符识别成功。
+- Lilu 负责对实际入口建立跳板；插件版本范围覆盖 macOS 26 所用的 Darwin 25，OpenCore 条目的 MinKernel/MaxKernel 留空。需要支持对应系统的 Lilu，本项目最低依赖版本为1.7.3。
+- 保留空指针、请求未发布、队列和 TRB 类型检查；整条队列验证后才改写。读取实际 TD 容量，每TD最多256槽、每请求最多256个TD，避免越界或部分改写。
+
+## 安装
+
+1. 将 `Kexts/XHCILagFix.kext` 放入 `EFI/OC/Kexts`。
+2. 在 OpenCore `Kernel/Add` 中启用该插件，放在 Lilu 后面。条目参考见 [OpenCore/Kernel-Add.plist](OpenCore/Kernel-Add.plist)，不要用它整份覆盖配置。
+3. 禁用旧的 USBXHCIWakeup、 GenericUSBXHCI 或其他同类修复类似问题的插件，避免重复改写。
+4. 重启生效。
+
+需要停用时，启动参数使用 `-xhcilagfixoff`，也兼容 `-xhciallrouteoff`。本插件不支持运行时卸载。
+
+## 查看是否生效
+
+```sh
+ioreg -r -c XHCILagFix -l -w0
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| Version | 独立插件版本，当前为0.1.0 |
+| Active | 三个核心 Hook 已全部安装并启用改写 |
+| Failure | 符号解析或跳板安装失败的说明，成功时为空 |
+
+这里只显示加载与 Hook 安装状态。状态仅在服务启动和驱动加载完成时发布；`Active=Yes` 表示补丁已启用，实际效果以设备表现为准。
+
+## 项目内容与验证
 
 ```text
-块层请求 / SCSI READ
-        ↓
-BOT：CBW → Data → CSW
-        ↓
-xHCI Transfer TRB / Event Ring
-        ↓
-MSI 或其他中断通知
-        ↓
-XNU 中断入口
-        ↓
-AppleUSBXHCI Filter / Action / Event 消费
+src/                    独立补丁源码，221行，含注释和空行
+Kexts/XHCILagFix.kext/   预编译插件
+OpenCore/               Kernel/Add条目参考
+tests/                  离线队列和原函数转发测试
+build.sh                构建脚本
+validate.py             离线验证脚本
+BUILDING.md             构建方法
+validation-summary.json 验证摘要
 ```
 
-最关键的观测时间线是：
+离线测试覆盖四类队列改写、不同 TD 容量、位域保留、原函数参数及返回值、Slot 私有副本、符号缺失和部分安装后的转发。
 
-```
-USB Transfer Event 已写入 Event Ring
-        ↓ 约 40–50 ms（导致一切延迟的罪魁祸首！！）
-XNU 硬件中断入口
-        ↓ 微秒级
-AppleUSBXHCI Filter / Action / Event 消费
-```
-
-也就是说，完成事件已经存在，原驱动的软件处理也很快；主要空白位于事件有效到 XNU 中断路径开始之间。仍然不能单独确认延迟发生在 xHCI 生成 MSI 之前、PCIe/SoC 投递过程中、Local APIC 到 CPU 接受之间，还是共享中断后来由其他 Event Ring 活动顺带唤醒。
-
-### 与 QEMU Issue #2705 的关系
-
-[QEMU Issue #2705](https://gitlab.com/qemu-project/qemu/-/issues/2705) 讨论的是 macOS 客户机在 xHCI 中断映射不正确时，非 Ring 0 的 Event Ring 事件无法及时通过 MSI/MSI-X 或引脚中断送达；相关修复讨论包括禁用不支持的 Interrupter，或在映射不支持时把事件统一放到 Ring 0。
-
-本机和该问题有一个相似点：均为中断异常导致的 USB 设备延迟。但后来调查确认，本机三个 Interrupter（Ring 0、1、2）按照 xHCI 规范通过单个 MSI 消息共享 CPU Vector 116，Ring 1 的 Target=1，映射本身是正确的；真正发现的问题是 Ring 1 的 Transfer Event 已经有效，却在进入 XNU 中断入口前延迟约 40–50 ms，而 Filter、Action 和事件消费仅需微秒级。因此，正确原因应表述为 Ring 1 完成事件的中断通知或投递路径异常延迟，而不是 Interrupter 映射错误；MSI 生成与投递的具体环节尚未直接观测。
-
-经过多轮日志、反汇编和重启，原因只能粗略定位于此；继续采集仍缺少“MSI 写事务实际发生时刻”的现成观测点，且和 AI 沟通已经不能取得太多新进展。调查因此停止，补丁定位为绕过症状的实验方案，而不是针对硬件机制的根本修复。
-
-## 当前修复思路
-
-因只有触摸板正常工作，受其方案（`-vi2c-force-polling`）的启发，我决定也采取轮询的思想来绕过中断通知问题；
-该补丁保留正常 MSI 路径，并增加一个备用唤醒路径：
-
-1. 在每个控制器自己的原工作循环上检查实际事件环；
-2. 对稳定有效且持续未消费的事件进行确认；
-3. 默认每 **100 µs** 请求一次检查，事件稳定滞留 **200 µs** 后才触发补偿；
-4. 在原工作循环内调用 AppleUSBXHCI 自己的 `manuallyProcessInterrupts()`；
-5. 由原驱动消费事件并完成正常的 ERDP/EHB 更新。
-
-100 µs 的检查时间和 200 µs 的滞留时间是根据当前测试定下的工作参数，经测试此参数工作良好。
-补丁本身不更改 Interrupter Target、MSI/MSI-X、IMAN、IMOD 或中断配置，也不移动 Ring consumer。未知的私有 ABI、对象关系或生命周期覆写会拒绝启用。
-
-## 未知影响
-
-目前尚不能证明：
-
-- 100 µs 检查在所有机器上的 CPU 占用和功耗；
-- 睡眠、唤醒、热插拔和多控制器同时工作时的稳定性；
-- 手动补偿是否会触发某些未发现的驱动锁交错；
-- 长时间运行或异常掉电时是否存在数据一致性风险。
-
-当前大文件读取的 MD5 多次一致，说明 USB 读取结果稳定可重复。原生驱动仍负责消费 Event Ring，补丁不直接伪造事件或改写 MSI 配置。
-
-## 当前测试反馈
-
-启用补偿路径后，据我实测报告（仅测试了我的机器）：
-
-- USB 读取速度恢复正常，在 USB 3.0 的实际链路速度下，离线安装镜像加载时间从三个多小时降到三分钟左右，且成功安装并进入了系统；
-- 2.4 GHz 无线鼠标和键盘恢复正常响应，USB-C 有线网卡可用，ping 延迟正常；
-- USB-A 端口和 USB-C 端口似乎正常工作；
-- 之前用于启动的 USB 3.0 SG Flash 会直接异常退出，现在也可以读取；
-
-## 使用范围
-
-- macOS 11 及以后、x86_64、AppleUSBXHCI；
-- 需要 Lilu 1.7.3 或兼容版本，并放在本 Kext 之前；
-- 不保证所有 AMD/Intel 控制器和所有 macOS 版本都能启用；未知私有 ABI 会安全拒绝启用；
-- 100 µs 是请求的检查周期，不是硬实时保证；CPU 占用、睡眠唤醒、热插拔和多控制器压力仍需更多实机测试。
-
-默认自动运行。遇到异常时可以使用启动参数 `-xhciwakeupoff` 禁用，或回滚到原 EFI。
-
-## 应用方法
-
-1. 备份当前 EFI，把 `Kexts/USBXHCIWakeup.kext` 复制到 EFI 的 `EFI/OC/Kexts/`。
-2. 将 `OpenCore/Kernel-Add.plist` 中的条目加入 `config.plist → Kernel → Add`，确保它位于 Lilu 之后并启用。
-
-## 目录内容
-
-- `Kexts/USBXHCIWakeup.kext`：已构建的 x86_64 Kext；
-- `OpenCore/Kernel-Add.plist`：Kernel → Add 条目片段；
-- `collector/`：只读状态导出和 start/stop 控制工具；
-- `src/`、`tests/`、`build.sh`：源码和离线验证材料；
-- `licenses/`：Lilu、MacKernelSDK、HDE64 许可文本；
-- `validation-summary.json`：构建和离线检查摘要。
-
-安装时不需要运行 collector 。collector 只用于确认逐控制器状态、唤醒调用和进展计数。
-
-## 验证边界
-
-`manuallyProcessInterrupts()` 会走原驱动的完成路径，因此原驱动可能正常写入硬件状态寄存器。补丁没有主动重写这些寄存器。原生完成回调在极端生命周期交错下的锁行为尚未穷尽验证，发布前请保留可启动的原 EFI 和回滚选项。
-
+构建方法见 [BUILDING.md](BUILDING.md)。

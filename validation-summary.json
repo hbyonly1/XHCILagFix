@@ -1,45 +1,72 @@
 {
-  "version": "0.2.0",
-  "experimental": true,
-  "platform": "x86_64 macOS 11+ / AppleUSBXHCI",
-  "settings": {
-    "poll_requested_us": 100,
-    "stable_event_stall_us": 200,
-    "default_enabled": true,
-    "duration_limit": null
+  "passed": true,
+  "version": "0.1.0",
+  "core_hooks": 3,
+  "source_lines_including_comments_and_blanks": 221,
+  "architectures_tested": [
+    "arm64 userspace fixtures",
+    "x86_64 userspace fixtures"
+  ],
+  "queue_cases_per_architecture": 37,
+  "actual_fix_cpp_scenarios_per_architecture": 4,
+  "kernel_version_gate": {
+    "minimum_darwin": 20,
+    "maximum_darwin": 2147483647,
+    "darwin_25_macos_26_allowed": true
   },
-  "offline_validation": {
-    "driver_samples": [
-      "24E263",
-      "24H32"
-    ],
-    "runtime_layout_assertions_per_sample": 794,
-    "hook_span_assertions_per_sample": 538,
-    "prepare_assertions_per_sample": 1142,
-    "hardware_executed_during_offline_validation": false
+  "opencore_kernel_bounds_empty": true,
+  "runtime_uuid_or_fingerprint_gate": false,
+  "macos_26_hardware_tested": false,
+  "standalone_hardware_boot_tested": false,
+  "reference_binary_audit_performed": true,
+  "dependencies": {
+    "Lilu": "0515f40b7f2a096adc85e832a4c6104fbd07f936",
+    "MacKernelSDK": "3f750085caa17ec3a7880f11c11bf4f48cd6a164"
   },
-  "hardware_feedback": {
-    "scope": "single AMD Ryzen 9 8945HS system; preliminary user report",
-    "installer_image_load": "over 3 hours to under 3 minutes",
-    "negotiated_link": "USB 3 / 5 Gbps reported",
-    "three_md5_reads": "identical",
-    "installation_completed": false,
-    "integrity_proven_by_reference_hash": false,
-    "media_suspected_damaged": true,
-    "wireless_mouse_2_4GHz": "responsive",
-    "usb_a": "SG Flash (23A9:EF18) detected and readable",
-    "usb_c_ethernet": "usable after GP19 restoration; ping comparable to normal macOS"
+  "created_utc": "2026-10-18T08:38:14.152019+00:00",
+  "project_name": "XHCILagFix (Ring 0)",
+  "replaces": "USBXHCIWakeup polling implementation",
+  "reference_kernel": "24E263",
+  "reference_vtable_entries_verified": 266,
+  "unresolved_imports": [],
+  "macos_15_feedback": {
+    "platform": "GA403UV / AMD Ryzen 9 8945HS / Sequoia Recovery",
+    "implementation": "USBXHCIObserver 0.3.3 using the same routing algorithm",
+    "user_report": "USB input devices recovered usable responsiveness",
+    "standalone_release_not_yet_boot_tested": true
   },
-  "kext_sha256": "8630637dc42c6079b3295cc76321e56d4b8efdb59b3d5389eb525ebd7766b766",
-  "source_audit": "docs/audit-review.json records the earlier static review; it does not claim hardware validation.",
-  "test_machine": {
-    "model": "ROG Zephyrus G14 GA403UV",
-    "cpu": "AMD Ryzen 9 8945HS",
-    "usb4": true,
-    "topology": "GP17: XHC0/XHC1; GP19: XHC3/XHC4/NHI0; XHC2 is non-xHCI",
-    "pre_fix_recovery_usb2_read_mb_s": 0.48,
-    "generic_usb_xhci": "1.3.0b2 GUX-RyzenXHCIFix line",
-    "utbmap": "custom UTBMap 1.1"
+  "efi_changed": false,
+  "remote_pushed": false,
+  "sha256": {
+    "src/symbols.hpp": "7588339b3e6772cab8430ccb58e5bbd74b664971822ba4aa8247391af6c3703d",
+    "src/fix.cpp": "d0f60b8cb5d230d4f94a970a3218ff7d81419a58717575676e2a60ad66975d7b",
+    "src/plugin.cpp": "df44d1d84e93d45c0f2e9c77da4d081afd8db9d2196565eba4d16469464995dd",
+    "src/service.cpp": "ec03ab64709599fad2adb059df1b808f76cc89754e2a53532946adc9996d6e75",
+    "src/fix.hpp": "df18430ddb46a3f9f6d3e48f9d39b6107c2adc2c4acee9298ca5d0c52f16317c",
+    "src/route0.hpp": "dfa99f3f9d7def1a4a544f40cd92a11d00f3df9ecbb2fbf5c7cf99ae2e8cbeb8",
+    "src/memory.hpp": "f69c582a1bf845cc1be46a783a6f88b074b660b4a5dca8afdcf89b3a9bcee6ef",
+    "tests/test_route0.cpp": "418ba8a06d7cb121ce890a72382d05e60de2a16acfa286ed784755de2e7d5f5d",
+    "tests/test_fix.cpp": "814a4e9545796a2a931d1cff0e411b405cd26ede6306d2ff2580e0284bf1a167",
+    "tests/stubs/Headers/kern_api.hpp": "5a45c4fe11135611ba947338b596d2842389c3d79967621b4267e80019c75bcf",
+    "licenses/MacKernelSDK.txt": "e5881019d8766c1e88a5fe1dbca4ba40c78011d41fcb18f6e9f50df60182685b",
+    "licenses/Lilu.txt": "74c3ca48189b796b0d262866e67de8efba77a71516667ce68dc3a8f13c2a3c57",
+    "Kexts/XHCILagFix.kext/Contents/Info.plist": "3eb49153c9f93096d438f1950f6c04c1e17a66a4c32d5a19ea4ec871d8290974",
+    "Kexts/XHCILagFix.kext/Contents/MacOS/XHCILagFix": "6f18c8a5196ff04eadb314fb26a289272612baccb03783848b076c08f5bd2c58",
+    "OpenCore/Kernel-Add.plist": "408fb5e9f14eb2e142a20090d06f056ca64eb62ebade7a8e01c16a336e006c11",
+    "docs/OFFLINE-VALIDATION.md": "c4f54484c3d84218c0cc8eb6e7729f12dc1380e15b1fb6f034789e06fe3ec6b0",
+    "README.md": "bec7b3c0a277daa1a64d3701bc67d07313a56095471a77b5af63dbb2c6418151",
+    "BUILDING.md": "395b8c72162370b18270a9bc0d9aa0dc79caa6873f144406a9a761d9630a1f70",
+    "build.sh": "f49b145bd70e3c7b423854bfa2af4df95185f61fe9af08d1a4e622d29499113e",
+    "validate.py": "5349b37f9e4bed670bfc8f88636b04405659879e9c68fd35812f791d5faec70d",
+    ".gitignore": "2b3e731850354b86234f2f5f94f5fcde758f9c724f55b17e24b3af82a9a5b06e",
+    "README_EN.md": "fd4c546d3719aa331fbec5c27c6c4d2530dcd45b8d18fe21edf78c8b03de0461"
   },
-  "boot_args": "-v keepsyms=1 debug=0x100 -wegnoegpu -vi2c-force-polling amfi=0x80 ipc_control_port_options=0 alcid=11"
+  "request_counters": false,
+  "periodic_timer": false,
+  "status_publication": "service start and AppleUSBXHCI load callback only",
+  "readme_other_sections_unchanged": true,
+  "per_trb_callback": false,
+  "production_endpoint_classification": false,
+  "diagnostic_hook_masks": false,
+  "startup_result_log": true
 }

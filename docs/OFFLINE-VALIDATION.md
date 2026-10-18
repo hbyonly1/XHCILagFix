@@ -1,5 +1,17 @@
-# Offline validation
+# 新版离线验证
 
-The release Kext was built as an x86_64 macOS Kext. The saved AppleUSBXHCI samples 24E263 and 24H32 passed the runtime layout, hook-span, and prepare-boundary checks. Each sample produced 794 layout assertions, 538 hook-span assertions, and 1142 prepare assertions. Policy, reservation, controller-lifecycle, collector, and export tests also passed.
+当前版本：XHCILagFix 0.1.0，三个核心 Hook，源码221行（含注释与空行）。
 
-This validation did not load the Kext, access a live controller, modify EFI, or claim a hardware result. The separate `docs/audit-review.json` is the static-review record; current single-machine hardware feedback is summarized in the root README and `validation-summary.json`.
+本次完成了重新构建，以及 ARM64/x86_64 用户态离线测试：每种架构37个纯队列案例，另有4组针对实际 fix.cpp 的安装/转发场景。包括四类TRB、8/32/256槽容量、完整队列检查、Target以外位保留、Control末尾追加描述符、原函数参数及返回值、Slot输入私有副本、符号缺失、地址边界和部分安装后保持转发。
+
+已使用开发环境保存的24E263参考内核及Lilu二进制审计导入符号，无缺失；IOService虚函数表266个非填充项匹配。二进制没有kdebug、PCI读写、MSR或MMIO映射访问导入，也未生成SIMD寄存器指令。参考ABI审计不是运行时版本白名单。
+
+插件的版本上限覆盖Darwin 25；OpenCore示例条目的MinKernel/MaxKernel为空，允许macOS 26加载。此项是静态配置验证，不是macOS 26的实机兼容性测试。
+
+macOS 15上的成功反馈来自包含同一核心改写的USBXHCIObserver 0.3.3。当前独立版本尚未单独启动验证。本次本地仓库更新没有加载Kext或修改启动EFI。
+
+生成物及源码哈希、依赖提交和验证摘要见仓库根目录validation-summary.json；完整开发报告由validate.py生成到build/validation.json。
+
+本次精简删除请求统计、每秒刷新定时器和工作循环。重新构建验证通过，生成物不再导入 IOTimerEventSource 或 IOWorkLoop；安装状态只在服务启动和模块加载完成时发布。README 仅更新“查看是否生效”节，其余部分按修改前摘要逐字核对保持一致。
+
+进一步精简：删除未使用的逐TRB回调、统计返回结构和生产端点类型分支，纯队列接口仅返回成功/失败；删除诊断Mask，状态只保留版本、模式、Active和Failure。启动结果日志保留。两种用户态架构均通过37个队列案例及4组实际fix.cpp场景。README除“查看是否生效”一节外保持原样。
